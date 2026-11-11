@@ -1,0 +1,116 @@
+# Pure PI / PCFF: 298 K NVT 平衡
+#
+# 输入结构：
+#   原：/home/albert/MD_LAMMPS/Pure_PI/4_NPT_ba/pure_PI_NPT_balanced_298K_0.1MPa_40ps.data
+#   当前：/home/albert/MD_LAMMPS/Pure_PI/4_NPT_ba/PIA_NPT_balanced_298K_0.1MPa_40ps.data
+#
+# 模拟条件：
+#   温度       298 K
+#   系综       NVT（晶胞尺寸固定为上一阶段 NPT 平衡后的尺寸）
+#   时间步长   1 fs
+#   模拟时长   700 ps = 700000 steps
+
+clear
+
+# ----------------------------------------------------------------------
+# 1. 路径和运行参数
+# ----------------------------------------------------------------------
+
+variable        outdir string /home/albert/MD_LAMMPS/Pure_PI/5_NVT
+variable        temperature equal 298.0
+variable        nsteps index 700000
+
+# 原日志方式（保留）：从输出目录启动并使用默认 log.lammps。
+# 为避免覆盖原日志，执行时通过命令行指定：-log PIA_log.lammps
+timer sync
+
+
+# ----------------------------------------------------------------------
+# 2. PCFF / Class2 力场设置
+#    力场样式必须在 read_data 前定义，以便读取 Class2 交叉项系数。
+# ----------------------------------------------------------------------
+
+units           real
+dimension       3
+boundary        p p p
+atom_style      full
+
+pair_style      lj/class2/coul/long 12.5
+bond_style      class2
+angle_style     class2
+dihedral_style  class2
+improper_style  class2
+
+# PCFF 的非键合混合规则及 1-2、1-3、1-4 相互作用缩放
+pair_modify     mix sixthpower tail yes
+special_bonds   lj/coul 0.0 0.0 1.0
+
+# 原读取路径（保留）：
+# read_data       /home/albert/MD_LAMMPS/Pure_PI/4_NPT_ba/pure_PI_NPT_balanced_298K_0.1MPa_40ps.data
+read_data       /home/albert/MD_LAMMPS/Pure_PI/4_NPT_ba/PIA_NPT_balanced_298K_0.1MPa_40ps.data
+
+# 长程静电作用
+kspace_style    pppm 1.0e-4
+
+# 输入 data 已包含上一阶段结束时的原子速度，本阶段直接继承，
+# 以保持两段模拟在相空间中的连续性。
+#
+# 该结构沿用原始模型的 image flags；启动时可能出现
+# “Inconsistent image flags”警告。LAMMPS 仍会采用最近周期镜像
+# 计算键合作用，本流程不使用依赖完整分子展开坐标的操作。
+
+# ----------------------------------------------------------------------
+# 3. 邻居表与时间步长
+# ----------------------------------------------------------------------
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+timestep        1.0
+reset_timestep  0
+
+# ----------------------------------------------------------------------
+# 4. 输出设置
+# ----------------------------------------------------------------------
+
+# 每 100 steps（0.1 ps）输出一次热力学信息
+thermo          100
+thermo_style    custom step time temp press pxx pyy pzz pe ke etotal vol density lx ly lz
+thermo_modify   flush yes lost error
+
+# 每 1000 steps（1 ps）保存一帧轨迹
+# 原轨迹输出命令（保留）：
+# dump            traj all custom 1000 ${outdir}/PI_NVT_298K.lammpstrj &
+#                 id mol type q x y z ix iy iz
+dump            traj all custom 1000 ${outdir}/PIA_NVT_298K.lammpstrj &
+                id mol type q x y z ix iy iz
+dump_modify     traj sort id
+
+# ----------------------------------------------------------------------
+# 5. 298 K NVT 平衡
+#
+# 温控阻尼：100 fs
+# NVT 阶段不再调节压力和晶胞尺寸。
+# ----------------------------------------------------------------------
+
+fix             nvt_balance all nvt temp ${temperature} ${temperature} 100.0
+
+run             ${nsteps}
+
+unfix           nvt_balance
+
+# ----------------------------------------------------------------------
+# 6. 保存 700 ps NVT 平衡后的最终构型
+# ----------------------------------------------------------------------
+
+timer
+
+# 原输出名称（保留）：
+# write_data      ${outdir}/pure_PI_NVT_298K_700ps.data
+write_data      ${outdir}/PIA_NVT_298K_700ps.data
+
+undump          traj
+
+print           "NVT equilibration finished: 298 K, 700 ps."
+# print           "Final data: ${outdir}/pure_PI_NVT_298K_700ps.data"
+print           "Final data: ${outdir}/PIA_NVT_298K_700ps.data"

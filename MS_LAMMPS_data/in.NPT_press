@@ -1,0 +1,122 @@
+# Pure PI / PCFF: 298 K、0.2 GPa 高压 NPT 压缩
+#
+# 输入结构：
+#   原：/home/albert/MD_LAMMPS/Pure_PI/0_data/pure_PI_Cell.data
+#   当前：/home/albert/MD_LAMMPS/Pure_PI/0_data/PIA_cell.data
+#
+# 模拟条件：
+#   温度       298 K
+#   压力       0.2 GPa = 1973.8465 atm（units real）
+#   时间步长   1 fs
+#   模拟时长   40 ps = 40000 steps
+
+clear
+
+# ----------------------------------------------------------------------
+# 1. 路径和运行参数
+# ----------------------------------------------------------------------
+
+variable        outdir string /home/albert/MD_LAMMPS/Pure_PI/1_NPT_press
+variable        temperature equal 298.0
+variable        pressure equal 1973.84652603
+variable        nsteps index 40000
+
+# 原日志方式（保留）：使用 LAMMPS 默认的 log.lammps。
+# 为避免覆盖原日志，执行时通过命令行指定：-log PIA_log.lammps
+
+# -------------------- 新增：启动整体计时器 --------------------
+timer sync
+
+
+# ----------------------------------------------------------------------
+# 2. PCFF / Class2 力场设置
+#    力场样式必须在 read_data 前定义，以便读取 Class2 交叉项系数。
+# ----------------------------------------------------------------------
+
+units           real
+dimension       3
+boundary        p p p
+atom_style      full
+
+pair_style      lj/class2/coul/long 12.5
+bond_style      class2
+angle_style     class2
+dihedral_style  class2
+improper_style  class2
+
+# PCFF 的非键合混合规则及 1-2、1-3、1-4 相互作用缩放
+pair_modify     mix sixthpower tail yes
+special_bonds   lj/coul 0.0 0.0 1.0
+
+# 原读取路径（保留）：
+# read_data       /home/albert/MD_LAMMPS/Pure_PI/0_data/pure_PI_Cell.data
+read_data       /home/albert/MD_LAMMPS/Pure_PI/0_data/PIA_cell.data
+
+# 长程静电作用
+kspace_style    pppm 1.0e-4
+
+# 说明：原始 data 未写入跨周期分子的 image flags，启动时可能出现
+# “Inconsistent image flags”警告。LAMMPS 仍会采用最近周期镜像计算键合作用；
+# 本流程不使用依赖完整分子展开坐标的 fix rigid 或 replicate。
+
+# ----------------------------------------------------------------------
+# 3. 邻居表与时间步长
+# ----------------------------------------------------------------------
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+timestep        1.0
+reset_timestep  0
+
+# ----------------------------------------------------------------------
+# 4. 初始速度
+#    原始 data 文件不含 Velocities 段，因此在 298 K 生成初速度。
+# ----------------------------------------------------------------------
+
+velocity        all create ${temperature} 20260723 mom yes rot yes dist gaussian
+
+# ----------------------------------------------------------------------
+# 5. 输出设置
+# ----------------------------------------------------------------------
+
+# 每 100 steps（0.1 ps）输出一次热力学信息
+thermo          100
+thermo_style    custom step time temp press pxx pyy pzz pe ke etotal vol density lx ly lz
+thermo_modify   flush yes lost error
+
+# 每 1000 steps（1 ps）保存一帧轨迹
+# 原轨迹输出命令（保留）：
+# dump            traj all custom 1000 ${outdir}/PI_NPT0.2_298K.lammpstrj id mol type q x y z ix iy iz
+dump            traj all custom 1000 ${outdir}/PIA_NPT0.2_298K.lammpstrj id mol type q x y z ix iy iz
+dump_modify     traj sort id
+
+# ----------------------------------------------------------------------
+# 6. 298 K、0.2 GPa 各向同性 NPT 压缩
+#
+# 温控阻尼：100 fs
+# 压控阻尼：1000 fs（1 ps）
+# drag 1.0 用于减弱高压压缩过程中的体积振荡。
+# ----------------------------------------------------------------------
+
+fix             npt_compress all npt temp ${temperature} ${temperature} 100.0 &
+                iso ${pressure} ${pressure} 1000.0 drag 1.0
+
+run             ${nsteps}
+
+unfix           npt_compress
+
+# ----------------------------------------------------------------------
+# 7. 保存 40 ps 压缩后的最终结构（不输出续算文件）
+# ----------------------------------------------------------------------
+timer
+
+# 原输出名称（保留）：
+# write_data      ${outdir}/pure_PI_NPT0.2_298K_40ps.data
+write_data      ${outdir}/PIA_NPT0.2_298K_40ps.data
+
+undump          traj
+
+print           "NPT compression finished: 298 K, 0.2 GPa, 40 ps."
+# print           "Final data: ${outdir}/pure_PI_NPT0.2_298K_40ps.data"
+print           "Final data: ${outdir}/PIA_NPT0.2_298K_40ps.data"

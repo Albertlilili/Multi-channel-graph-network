@@ -1,0 +1,197 @@
+# Pure PI / PCFF: 850 K -> 250 K 分段降温 Tg 模拟
+#
+# 输入结构：
+#   原：/home/albert/MD_LAMMPS/Pure_PI/5_NVT/pure_PI_NVT_298K_700ps.data
+#   旧分段流程：/home/albert/MD_LAMMPS/Pure_PI/5_NVT/PIA_NVT_298K_700ps.data
+#   当前一体化流程：/home/albert/MD_LAMMPS/Pure_PI/1_5_relax/PIA_relaxed_298K_after_1-5.data
+#
+# 模拟方案：
+#   系综顺序       每个温度点先 NVT，随后 NPT
+#   温度范围       850 K -> 250 K
+#   温度间隔       25 K
+#   温度点数       25（包含 850 K 和 250 K）
+#   每点 NVT       200 ps
+#   每点 NPT       500 ps
+#   NPT 压力       1 atm
+#   时间步长       1 fs
+#   总模拟时长     25 x (200 + 500) ps = 17.5 ns
+#
+# 850 K 仅作为第一个温度点计算一次。读取 298 K 最终结构后，先将
+# 已有速度按比例缩放到 850 K，再开始该温度点的 200 ps NVT 平衡。
+# 后续温度点均直接继承上一温度点 NPT 结束时的坐标、速度和晶胞。
+
+clear
+
+# ----------------------------------------------------------------------
+# 1. 路径和运行参数
+# ----------------------------------------------------------------------
+
+variable        outdir string /home/albert/MD_LAMMPS/Pure_PI/6_Tg
+
+variable        temperature_high equal 850.0
+variable        temperature_low equal 250.0
+variable        temperature_step equal 25.0
+variable        npoints equal 25
+
+variable        pressure equal 1.0
+variable        nvt_steps equal 200000
+variable        npt_steps equal 500000
+
+# 原日志方式（保留）：从输出目录启动并使用默认 log.lammps。
+# 为避免覆盖原日志，执行时通过命令行指定：-log PIA_log.lammps
+timer sync
+
+
+# ----------------------------------------------------------------------
+# 2. PCFF / Class2 力场设置
+#    力场样式必须在 read_data 前定义，以便读取 Class2 交叉项系数。
+# ----------------------------------------------------------------------
+
+units           real
+dimension       3
+boundary        p p p
+atom_style      full
+
+pair_style      lj/class2/coul/long 12.5
+bond_style      class2
+angle_style     class2
+dihedral_style  class2
+improper_style  class2
+
+# PCFF 的非键合混合规则及 1-2、1-3、1-4 相互作用缩放
+pair_modify     mix sixthpower tail yes
+special_bonds   lj/coul 0.0 0.0 1.0
+
+# 原读取路径（保留）：
+# read_data       /home/albert/MD_LAMMPS/Pure_PI/5_NVT/pure_PI_NVT_298K_700ps.data
+# 旧分段流程读取路径（保留）：
+# read_data       /home/albert/MD_LAMMPS/Pure_PI/5_NVT/PIA_NVT_298K_700ps.data
+read_data       /home/albert/MD_LAMMPS/Pure_PI/1_5_relax/PI_2_relaxed_298K_after_1-5.data
+
+# 长程静电作用
+kspace_style    pppm 1.0e-4
+
+# 输入 data 已包含上一阶段结束时的原子速度。首次升至 850 K 时仅缩放
+# 速度大小，不重新随机生成速度，以保留已有速度方向和模拟连续性。
+velocity        all scale ${temperature_high}
+
+# 该结构沿用原始模型的 image flags；启动时可能出现
+# “Inconsistent image flags”警告。LAMMPS 仍会采用最近周期镜像
+# 计算键合作用，本流程不使用依赖完整分子展开坐标的操作。
+
+# ----------------------------------------------------------------------
+# 3. 邻居表与时间步长
+# ----------------------------------------------------------------------
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+timestep        1.0
+reset_timestep  0
+
+# ----------------------------------------------------------------------
+# 4. 通用输出设置
+# ----------------------------------------------------------------------
+
+# log 中每 1000 steps（1 ps）输出一次热力学信息
+thermo          1000
+thermo_style    custom step time temp press pxx pyy pzz pe ke etotal vol density lx ly lz
+thermo_modify   flush yes lost error
+
+# 完整模拟每 10000 steps（10 ps）保存一帧轨迹，以控制长模拟的文件体积
+# 原轨迹输出命令（保留）：
+# dump            traj all custom 10000 ${outdir}/PI_Tg_850-250K.lammpstrj &
+#                 id mol type q x y z ix iy iz
+dump            traj all custom 10000 ${outdir}/PI_2_Tg_850-250K.lammpstrj &
+                id mol type q x y z ix iy iz
+dump_modify     traj sort id
+
+# NPT 原始热力学数据所需的瞬时变量。
+# fix ave/time 使用 Nrepeat=1，因此输出的是每 1 ps 的原始瞬时值，
+# 而不是时间平均值。各列依次为：
+# Step, Temp(K), Press(atm), Density(g/cm^3), Volume(A^3), Lx, Ly, Lz(A)
+variable        raw_temp equal temp
+variable        raw_press equal press
+variable        raw_density equal density
+variable        raw_volume equal vol
+variable        raw_lx equal lx
+variable        raw_ly equal ly
+variable        raw_lz equal lz
+
+# ----------------------------------------------------------------------
+# 5. 25 个温度点的分段降温循环
+#
+# point = 1  -> target = 850 K
+# point = 25 -> target = 250 K
+#
+# 每个温度点：
+#   A. 200 ps NVT，使温度稳定并进行初步构象调整
+#   B. 500 ps NPT，在 1 atm 下充分弛豫体积和密度
+#   C. 保存该温度点的完整 data 文件
+# ----------------------------------------------------------------------
+
+variable        point loop ${npoints}
+
+label           temperature_loop
+
+variable        target equal ${temperature_high}-(${temperature_step}*(v_point-1))
+
+print           "============================================================"
+print           "Temperature point ${point}/${npoints}: target = ${target} K"
+print           "Stage A: 200 ps NVT at ${target} K"
+print           "============================================================"
+
+# -------------------- 阶段 A：200 ps NVT --------------------
+
+fix             nvt_stage all nvt temp ${target} ${target} 100.0
+
+run             ${nvt_steps}
+
+unfix           nvt_stage
+
+print           "Stage B: 500 ps NPT at ${target} K and 1 atm"
+
+# -------------------- 阶段 B：500 ps NPT --------------------
+
+# 每个温度点单独保存一份 NPT 原始热力学数据
+# 原热力学数据输出命令（保留）：
+# fix             npt_raw all ave/time 1000 1 1000 &
+#                 v_raw_temp v_raw_press v_raw_density v_raw_volume &
+#                 v_raw_lx v_raw_ly v_raw_lz &
+#                 file ${outdir}/thermo_NPT_${target}K.dat
+fix             npt_raw all ave/time 1000 1 1000 &
+                v_raw_temp v_raw_press v_raw_density v_raw_volume &
+                v_raw_lx v_raw_ly v_raw_lz &
+                file ${outdir}/PI_2_thermo_NPT_${target}K.dat
+
+fix             npt_stage all npt temp ${target} ${target} 100.0 &
+                iso ${pressure} ${pressure} 1000.0 drag 1.0
+
+run             ${npt_steps}
+
+unfix           npt_stage
+unfix           npt_raw
+
+# 保存完整结构、拓扑、晶胞尺寸和力场参数。
+# 下一温度点直接使用此时保留在内存中的同一最终状态继续模拟。
+# 原输出名称（保留）：
+# write_data      ${outdir}/pure_PI_Tg_${target}K.data
+write_data      ${outdir}/PI_2_Tg_${target}K.data
+
+# print           "Completed ${target} K; data saved as pure_PI_Tg_${target}K.data"
+print           "Completed ${target} K; data saved as PI_2_Tg_${target}K.data"
+
+next            point
+jump            SELF temperature_loop
+
+# ----------------------------------------------------------------------
+# 6. 全部分段降温完成
+# ----------------------------------------------------------------------
+
+timer
+
+undump          traj
+
+print           "Tg cooling workflow finished: 850 K -> 250 K, interval 25 K."
+# print           "Final 250 K data: ${outdir}/pure_PI_Tg_250K.data"
+print           "Final 250 K data: ${outdir}/PI_2_Tg_250K.data"

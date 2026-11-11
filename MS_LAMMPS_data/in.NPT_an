@@ -1,0 +1,147 @@
+# Pure PI / PCFF: 298 K <-> 598 K 梯度循环退火
+#
+# 输入结构：
+#   原：/home/albert/MD_LAMMPS/Pure_PI/2_NPT_ad/pure_PI_NPT0.1MPa_298K_500ps.data
+#   当前：/home/albert/MD_LAMMPS/Pure_PI/2_NPT_ad/PIA_NPT0.1MPa_298K_500ps.data
+#
+# 模拟条件：
+#   系综       NPT
+#   压力       0.1 MPa = 0.9869232667 atm（units real）
+#   循环次数   5
+#   每次升温   298 K -> 598 K，50 ps（6 K/ps）
+#   每次降温   598 K -> 298 K，100 ps（3 K/ps）
+#   时间步长   1 fs
+#   总时长     5 x (50 + 100) ps = 750 ps = 750000 steps
+#
+# 说明：
+#   NPT 系综需要用恒温器定义冷却过程，因此这里将“自然冷却”实现为
+#   比升温慢一倍的连续温度斜坡，以减少快速淬火造成的残余内应力。
+
+clear
+
+# ----------------------------------------------------------------------
+# 1. 路径和运行参数
+# ----------------------------------------------------------------------
+
+variable        outdir string /home/albert/MD_LAMMPS/Pure_PI/3_NPT_an
+variable        temperature_low equal 298.0
+variable        temperature_high equal 598.0
+variable        pressure equal 0.9869232667
+variable        ncycles equal 5
+variable        nheat equal 50000
+variable        ncool equal 100000
+
+# 原日志方式（保留）：从输出目录启动并使用默认 log.lammps。
+# 为避免覆盖原日志，执行时通过命令行指定：-log PIA_log.lammps
+timer sync
+
+
+# ----------------------------------------------------------------------
+# 2. PCFF / Class2 力场设置
+#    力场样式必须在 read_data 前定义，以便读取 Class2 交叉项系数。
+# ----------------------------------------------------------------------
+
+units           real
+dimension       3
+boundary        p p p
+atom_style      full
+
+pair_style      lj/class2/coul/long 12.5
+bond_style      class2
+angle_style     class2
+dihedral_style  class2
+improper_style  class2
+
+# PCFF 的非键合混合规则及 1-2、1-3、1-4 相互作用缩放
+pair_modify     mix sixthpower tail yes
+special_bonds   lj/coul 0.0 0.0 1.0
+
+# 原读取路径（保留）：
+# read_data       /home/albert/MD_LAMMPS/Pure_PI/2_NPT_ad/pure_PI_NPT0.1MPa_298K_500ps.data
+read_data       /home/albert/MD_LAMMPS/Pure_PI/2_NPT_ad/PIA_NPT0.1MPa_298K_500ps.data
+
+# 长程静电作用
+kspace_style    pppm 1.0e-4
+
+# 输入 data 已包含上一阶段结束时的原子速度，本阶段直接继承，
+# 以保持两段模拟在相空间中的连续性。
+#
+# 该结构沿用原始模型的 image flags；启动时可能出现
+# “Inconsistent image flags”警告。LAMMPS 仍会采用最近周期镜像
+# 计算键合作用，本流程不使用依赖完整分子展开坐标的操作。
+
+# ----------------------------------------------------------------------
+# 3. 邻居表与时间步长
+# ----------------------------------------------------------------------
+
+neighbor        2.0 bin
+neigh_modify    every 1 delay 0 check yes
+
+timestep        1.0
+reset_timestep  0
+
+# ----------------------------------------------------------------------
+# 4. 输出设置
+# ----------------------------------------------------------------------
+
+# 每 100 steps（0.1 ps）输出一次热力学信息
+thermo          100
+thermo_style    custom step time temp press pxx pyy pzz pe ke etotal vol density lx ly lz
+thermo_modify   flush yes lost error
+
+# 每 1000 steps（1 ps）保存一帧轨迹
+# 原轨迹输出命令（保留）：
+# dump            traj all custom 1000 ${outdir}/PI_NPT_anneal_298-598K.lammpstrj &
+#                 id mol type q x y z ix iy iz
+dump            traj all custom 1000 ${outdir}/PIA_NPT_anneal_298-598K.lammpstrj &
+                id mol type q x y z ix iy iz
+dump_modify     traj sort id
+
+# ----------------------------------------------------------------------
+# 5. 五次 298 K <-> 598 K NPT 梯度退火循环
+#
+# 温控阻尼：100 fs
+# 压控阻尼：1000 fs（1 ps）
+# 整个退火过程中压力均保持为 0.1 MPa。
+# ----------------------------------------------------------------------
+
+variable        cycle loop ${ncycles}
+
+label           anneal_loop
+
+print           "Annealing cycle ${cycle}/${ncycles}: heating 298 K -> 598 K over 50 ps."
+
+fix             npt_heat all npt temp ${temperature_low} ${temperature_high} 100.0 &
+                iso ${pressure} ${pressure} 1000.0 drag 1.0
+
+run             ${nheat}
+
+unfix           npt_heat
+
+print           "Annealing cycle ${cycle}/${ncycles}: cooling 598 K -> 298 K over 100 ps."
+
+fix             npt_cool all npt temp ${temperature_high} ${temperature_low} 100.0 &
+                iso ${pressure} ${pressure} 1000.0 drag 1.0
+
+run             ${ncool}
+
+unfix           npt_cool
+
+next            cycle
+jump            SELF anneal_loop
+
+# ----------------------------------------------------------------------
+# 6. 保存五次循环退火后的最终结构
+# ----------------------------------------------------------------------
+
+timer
+
+# 原输出名称（保留）：
+# write_data      ${outdir}/pure_PI_NPT_annealed_298-598K_5cycles.data
+write_data      ${outdir}/PIA_NPT_annealed_298-598K_5cycles.data
+
+undump          traj
+
+print           "NPT annealing finished: 5 cycles, 298 K <-> 598 K, 0.1 MPa."
+# print           "Final data: ${outdir}/pure_PI_NPT_annealed_298-598K_5cycles.data"
+print           "Final data: ${outdir}/PIA_NPT_annealed_298-598K_5cycles.data"
